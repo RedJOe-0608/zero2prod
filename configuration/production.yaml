@@ -1,0 +1,6 @@
+# Prod overrides (non-secret). Loaded when APP_ENVIRONMENT=production.
+# Placeholder values — no real server yet. The password is NOT here;
+# it comes from the platform's secrets store as APP_DATABASE__PASSWORD.
+database:
+  host: "db.internal.prod.aws.com"
+  username: "newsletter_app"

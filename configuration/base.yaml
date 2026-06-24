@@ -1,0 +1,7 @@
+# Settings identical in EVERY environment.
+# (differs-per-env values live in local.yaml / production.yaml;
+#  secrets like the db password live in env vars, never here.)
+application_port: 8000
+database:
+  port: 5432
+  database_name: "newsletter"
