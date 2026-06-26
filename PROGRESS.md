@@ -262,6 +262,85 @@ the "exactly once" side effect, `.expect()` because a failed logger at startup i
 
 ## 🎉 CHAPTER 4 (Telemetry) — COMPLETE. All skeleton slots now filled.
 
+---
+
+## 🚧 Chapter 5 (Deployment) — IN PROGRESS
+
+**Roadmap (full arc):** 0 `.dockerignore` → 1 sqlx offline → 2 bind `0.0.0.0` (`host` field) →
+3 naive build runs → 4 optimize (multi-stage + cargo-chef) → 5 deploy to host + managed Postgres →
+6 deferred Ch-3 debts (least-priv DB role, secret-managed password).
+
+### ✅ Step 0 — `.dockerignore` (DONE)
+- Created `.dockerignore` with `target/` (gigabytes of build artifacts) and `.env` (local secret).
+- **Why it matters:** the `.` in `docker build` = the **build context**, a tar bundle shipped to the
+  daemon. `.dockerignore` prunes that bundle, so `COPY . .` *cannot* copy what's excluded — secret
+  never enters the image, and we don't ship GBs over the socket every build.
+
+### ✅ Step 1 — sqlx OFFLINE mode (DONE — the chapter's crux so far)
+- **The problem:** `sqlx::query!` is a macro that connects to a LIVE Postgres *at compile time* (via
+  `DATABASE_URL`) and runs `PREPARE` to type-check the SQL against the real schema. Inside `docker
+  build` there's no DB, no `.env`, no network → `cargo build` would fail. Build-time DB validation
+  (great for bugs) vs self-contained reproducible builds (no external deps) are in tension; offline
+  mode resolves it.
+- **The fix = a committed cache.** `cargo sqlx prepare` connects ONCE locally, finds every `query!`,
+  asks Postgres to validate each, and writes one JSON per query into `.sqlx/`. Commit `.sqlx/` (NOT
+  ignored — the build needs it; it's schema-knowledge, not data → travels like migrations do).
+  `ENV SQLX_OFFLINE true` in the Dockerfile makes the macro read `.sqlx/` instead of phoning a DB.
+- **`--all-targets` gotcha:** plain `cargo sqlx prepare` scans only lib+bin → it MISSED the `query!`
+  in `tests/api/subscriptions.rs` (the `SELECT email,name`). Re-ran `cargo sqlx prepare -- --all-targets`
+  → now **2 JSON files** (INSERT from `src/lib.rs:42` + SELECT from the test). The missing test query
+  wouldn't break the Docker build (release build = bin only, not tests) but WOULD break `cargo test`
+  / CI under `SQLX_OFFLINE`.
+- **Cache mechanics locked in:** ONE file per *unique query*, not per run. Filename `query-<hash>.json`
+  where hash = fingerprint of the SQL string (content-addressed, like git objects). Re-running prepare
+  is idempotent (same queries → same files overwritten; orphaned/old-hash files cleaned up). Change SQL
+  → new hash → new file; the macro hashing the new text and finding no file = the staleness safety check
+  (build fails loud rather than validating against an old snapshot). **Discipline: change any SQL →
+  re-run `cargo sqlx prepare -- --all-targets` → commit `.sqlx/`.**
+- The cache JSON holds the DB's frozen answer: `parameters.Left` = `$1..$N` types Postgres reported
+  (Uuid/Text/Text/Timestamptz for the INSERT), `columns`/`nullable` = output column info.
+
+### ✅ Step 2 — `host` field + `0.0.0.0` bind (DONE, USER WROTE IT)
+- Added `host: String` to `ApplicationSettings`; `local.yaml` = `127.0.0.1`, `production.yaml` = `0.0.0.0`.
+- `TcpListener::bind(format!("{}:{}", config.application.host, config.application.port))` — host now
+  comes from config, not hardcoded. `0.0.0.0` = bind all interfaces → reachable from outside the container.
+  `127.0.0.1` = loopback only → in-container only, unreachable from host/outside.
+
+### ✅ Step 3 — naive image BUILDS and the binary RUNS (DONE)
+- Dockerfile (single-stage, now superseded): `FROM rust:1.96.0` · `WORKDIR /app` · `apt-get install lld clang`
+  · `COPY . .` · `ENV SQLX_OFFLINE true` · `cargo build --release` · `ENTRYPOINT`.
+- `docker build -t zero2prod .` → **SUCCESS.** Offline mode end-to-end proven.
+- **Image = 4.49 GB** — shipped whole Rust toolchain + build artifacts + OS just to run one ~30 MB binary.
+
+### ✅ Step 4 — optimised image: multi-stage build + cargo-chef (DONE)
+- **Two problems solved separately:**
+  1. **Image too large** → multi-stage build. Only the last stage's filesystem becomes the final image.
+     Builder stage (big: Rust toolchain, lld, clang, target/) compiles the binary; runtime stage (tiny:
+     `debian:bookworm-slim`) copies only the binary out. Toolchain + artifacts discarded.
+     `debian:bookworm-slim` not Alpine: same glibc family as the builder → no dynamic linking issues.
+     Runtime needs `openssl` (dynamically linked — binary has a "load libssl.so at startup" note) and
+     `ca-certificates` (a file OpenSSL reads to verify TLS certs). Both installed in one `RUN` chain
+     (one layer) so the apt cache cleanup actually reduces size — deletions in a later layer don't help.
+     **Result: 4.49 GB → 161 MB.**
+  2. **Builds too slow** → cargo-chef. Every `docker build` recompiled all 50 deps from scratch because
+     `COPY . .` invalidates the layer before `cargo build` on every source change. cargo-chef splits
+     dep compilation from your-code compilation via a `recipe.json` manifest:
+     - **Planner stage:** `COPY . .` → `cargo chef prepare` → `recipe.json` (captures all targets including
+       implicit ones like `src/lib.rs`, `src/main.rs`, `tests/api/main.rs` that Cargo.toml doesn't list).
+     - **Builder stage:** `COPY recipe.json` → `cargo chef cook` (creates dummy source files at all target
+       paths to pass cargo's pre-flight existence check, compiles all deps into target/) → `COPY . .` →
+       `cargo build --release` (deps cached, only your code recompiles).
+     - Cook layer is cached as long as `Cargo.toml`/`Cargo.lock` unchanged. Source change → cook = cache
+       hit, only your code reruns. **Verified: second build after touching src/lib.rs was nearly instant.**
+- **Key concepts locked in:** compiled binary = machine code, no Rust toolchain needed at runtime; deps
+  are statically linked (baked in) except OpenSSL (dynamically linked by design — security patches);
+  containers share kernel, each has own userspace; Docker layers = diffs, only last stage ships;
+  layer order rule: rarely-changes near top, often-changes near bottom; `&&` chains = one layer so
+  cleanup actually works; `recipe.json` exists because cargo's pre-flight check requires ALL target
+  source files to exist before compiling anything.
+
+### 🔜 NEXT — Step 5 (deploy to real host + managed Postgres) → Step 6 (deferred debts)
+
 ### (historical) #3 plan — make the test suite emit logs (the "init only once" puzzle)
 **Puzzle (already reasoned out):** subscriber installs ONCE per process, but `cargo test` = many
 tests in ONE process, each calling `spawn_app` → naive per-test install panics on test #2. The

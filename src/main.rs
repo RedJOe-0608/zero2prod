@@ -25,7 +25,17 @@ async fn main() -> Result<(),std::io::Error>{
     .expect("failed to connect to postres");
 
     // binding to a port can fail with an IO error
-    let listner = TcpListener::bind("127.0.0.1:8000").await?;
+    let listner = TcpListener::bind(format!("{}:{}",configuration.application.host,configuration.application.port)).await?;
+
+    /*
+    NOTE ON Wildcard IP address: 0.0.0.0 is a special IP. its saying, "hey OS, across all the IP addresses that this machine is assigned to, all the interfaces, (meaning, all the networks this machine is a prt of), any incoming request to port 8000 deliver it to me."
+    
+    - Important thing to understand is that, a machine can have multiple IPs. the loopback address, the wifi address, the ethernet one. essentially, IP address is given to locate the machine in a speicific network. if the machine is part of multiple networks, it has multiple IPs.
+    
+    and this is needed for docker containers. each container has its own networking. so, we do port forwarding, something like -p 8000:8000. So any incoming request on the machine's port 8000, it is delivered to port 8000 of the container. 
+     */
+
+
     run(listner,pool).await
 }
 

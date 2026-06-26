@@ -1,4 +1,7 @@
 # Laptop overrides (non-secret). Loaded when APP_ENVIRONMENT is unset.
+
+application:
+  host: "127.0.0.1"
 database:
   host: "localhost"
   username: "jyothi"
