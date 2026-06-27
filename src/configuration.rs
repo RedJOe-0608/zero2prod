@@ -1,4 +1,4 @@
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions,PgSslMode};
 
 enum Environment {
     Local,
@@ -47,17 +47,26 @@ pub struct DatabaseSettings {
    pub password: String,
    pub host: String,
    pub port: u16,
-   pub database_name: String
+   pub database_name: String,
+   pub require_ssl: bool
 }
 
 impl DatabaseSettings {
     pub fn without_db(&self) -> PgConnectOptions {
+
+        let ssl_mode = if self.require_ssl {
+            PgSslMode::Require
+        } else {
+            PgSslMode::Disable
+        };
+
         PgConnectOptions::new()
             .host(&self.host)
             .username(&self.username)
             .password(&self.password)
             .port(self.port)
             .database("postgres")
+            .ssl_mode(ssl_mode)
     }
 
     pub fn with_db(&self) -> PgConnectOptions {

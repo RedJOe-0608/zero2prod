@@ -5,3 +5,4 @@ application:
 database:
   host: "localhost"
   username: "jyothi"
+  require_ssl: false

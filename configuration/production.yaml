@@ -7,3 +7,4 @@ application:
 database:
   host: "db.internal.prod.aws.com"
   username: "newsletter_app"
+  require_ssl: true
